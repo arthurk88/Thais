@@ -1,0 +1,282 @@
+
+name: Laravel CI & Deploy
+
+on:
+  push:
+    branches: [main]
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: mbstring, intl, pdo_mysql
+          tools: composer
+
+      - name: Install Composer dependencies
+        run: composer install --no-dev --prefer-dist
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: ci
+
+    steps:
+      # 1. Atualiza o código no servidor.
+      - name: Preparar servidor
+        uses: appleboy/ssh-action@v1.2.5
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          port: ${{ secrets.DEPLOY_PORT }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          command_timeout: 15m
+          script: |
+            set -Ee
+
+            APP="/home/auroracloud.com.br/erp.auroracloud.com.br"
+            cd "$APP"
+
+            git config --global --add safe.directory "$APP"
+
+            echo "🔒 Colocando aplicação em manutenção"
+            php artisan down --retry=60 || {
+              echo "❌ Não foi possível colocar a aplicação em manutenção."
+              exit 1
+            }
+
+            echo "🔑 Encerrando sessões"
+            php artisan tinker --execute="DB::table('sessions')->delete();"
+
+            echo "📦 Atualizando código"
+            git fetch origin main
+            git reset --hard origin/main
+
+            echo "✔ Código atualizado"
+
+      # 2. Compila os assets e finaliza a atualização do Laravel.
+      - name: Finalizar deploy
+        uses: appleboy/ssh-action@v1.2.5
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          port: ${{ secrets.DEPLOY_PORT }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          command_timeout: 15m
+          script: |
+            set -Ee
+
+            APP="/home/auroracloud.com.br/erp.auroracloud.com.br"
+            cd "$APP"
+
+            echo "🔁 Verificando link do storage"
+            php artisan storage:link || true
+
+            echo "📦 Instalando dependências NPM"
+            npm ci --silent --no-progress
+
+            echo "🧱 Compilando assets"
+            npm run build
+
+            echo "🧹 Limpando caches"
+            php artisan optimize:clear
+
+            echo "🚚 Executando migrações"
+            php artisan migrate --force
+
+            echo "⚙ Reconstruindo caches"
+            php artisan optimize
+
+            echo "🔎 Validando manifest do Vite"
+            test -s public/build/manifest.json
+
+            echo "🚀 Retirando aplicação da manutenção"
+            php artisan up
+
+            echo "✔ Deploy completo"
+
+
+# name: Laravel CI & Deploy
+
+# on:
+#   push:
+#     branches: [main]
+
+# env:
+#   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  
+# jobs:
+
+#   ci:
+#     runs-on: ubuntu-latest
+
+#     steps:
+#       - name: Checkout
+#         uses: actions/checkout@v4
+
+#       - name: Setup PHP
+#         uses: shivammathur/setup-php@v2
+#         with:
+#           php-version: '8.3'
+#           extensions: mbstring, intl, pdo_mysql
+#           tools: composer
+
+#       - name: Install Composer dependencies
+#         run: composer install --no-dev --prefer-dist
+
+#       - name: Setup Node
+#         uses: actions/setup-node@v4
+#         with:
+#           node-version: 22
+
+#       - name: Install NPM dependencies
+#         run: npm ci
+
+#       - name: Build assets
+#         run: npm run build
+
+#       - name: Upload build artifact
+#         uses: actions/upload-artifact@v4
+#         with:
+#           name: build
+#           path: public/build/
+
+
+#   deploy:
+#     runs-on: ubuntu-latest
+#     needs: ci
+
+#     steps:
+#       - name: Checkout repository
+#         uses: actions/checkout@v4
+
+#       - name: Download CI build artifacts
+#         uses: actions/download-artifact@v4
+#         with:
+#           name: build
+#           path: build
+
+#       - name: Deploy ONLY public/build via rsync (safe)
+#         uses: burnett01/rsync-deployments@4.1
+#         with:
+#           switches: -avzr --delete
+#           path: "build/"
+#           remote_path: "/home/auroracloud.com.br/erp.auroracloud.com.br/public/build/"
+#           remote_host: ${{ secrets.DEPLOY_HOST }}
+#           remote_user: ${{ secrets.DEPLOY_USER }}
+#           remote_port: ${{ secrets.DEPLOY_PORT }}
+#           remote_key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+#       # 🔥 CÓDIGO: update via git e NÃO via rsync
+#       - name: Executar comandos remotos
+#         uses: appleboy/ssh-action@v1.0.3
+#         with:
+#           host: ${{ secrets.DEPLOY_HOST }}
+#           username: ${{ secrets.DEPLOY_USER }}
+#           port: ${{ secrets.DEPLOY_PORT }}
+#           key: ${{ secrets.SSH_PRIVATE_KEY }}
+#           script: |
+#             cd /home/auroracloud.com.br/erp.auroracloud.com.br
+
+#             echo "🔒 App em manutenção"
+#             php artisan down || true
+
+#             echo "🔑 Derrubando todas as sessões"
+#             php artisan tinker --execute="DB::table('sessions')->delete();"
+
+#             git config --global --add safe.directory /home/auroracloud.com.br/erp.auroracloud.com.br
+
+#             echo "📦 Atualizando código..."
+#             git fetch origin main
+#             git reset --hard origin/main
+
+#             echo "🔁 Criando link do storage..."
+#             php artisan storage:link || true
+
+#             echo "🧹 Limpando caches"
+#             php artisan optimize:clear
+
+#             echo "🚚 Rodando migrações"
+#             php artisan migrate --force
+
+#             echo "⚙ Otimizando"
+#             php artisan optimize
+
+#             echo "🚀 Voltando ao ar"
+#             php artisan up
+
+#             echo "✔ Deploy completo"
+
+
+
+# name: Laravel CI & Deploy
+
+# on:
+#   push:
+#     branches:
+#       - main
+
+# jobs:
+#   deploy:
+#     runs-on: ubuntu-latest
+
+#     steps:
+#       - name: Conectar via SSH e executar deploy
+#         uses: appleboy/ssh-action@v1.0.3
+#         with:
+#           host: ${{ secrets.DEPLOY_HOST }}
+#           username: ${{ secrets.DEPLOY_USER }}
+#           port: ${{ secrets.DEPLOY_PORT }}
+#           key: ${{ secrets.SSH_PRIVATE_KEY }}
+#           script: |
+#             cd /home/auroracloud.com.br/erp.auroracloud.com.br || exit
+
+#             echo "🚧 Modo manutenção ativado..."
+#             php artisan down
+
+#             # Marca o diretório como seguro para o Git
+#             git config --global --add safe.directory /home/auroracloud.com.br/erp.auroracloud.com.br
+
+#             echo "📍 Diretório atual:"
+#             pwd
+#             echo "📂 Conteúdo do diretório:"
+#             ls -la
+#             echo "🔧 Status do Git antes do update:"
+#             git status
+
+#             echo "📦 Atualizando repositório..."
+#             git fetch origin main
+#             git reset --hard origin/main
+#             git clean -fd
+
+#             echo "🔧 Status do Git após update:"
+#             git status
+
+#             echo "📚 Instalando dependências PHP..."
+#             composer install --no-dev --prefer-dist --optimize-autoloader
+
+#             echo "📦 Instalando dependências NPM..."
+#             npm ci --silent --no-progress
+
+#             echo "🧱 Compilando assets..."
+#             npm run build
+
+#             echo "🚀 Limpando e otimizando caches..."
+#             php artisan optimize
+
+#             echo "🗃️ Executando migrações..."
+#             php artisan migrate --force
+
+#             echo "✅ Voltando o site ao ar..."
+#             php artisan up
+
+#             echo "✅ Deploy concluído com sucesso!"
